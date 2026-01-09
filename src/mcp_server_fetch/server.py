@@ -1,3 +1,4 @@
+import os
 from typing import Annotated, Tuple
 from urllib.parse import urlparse, urlunparse
 
@@ -5,7 +6,9 @@ import markdownify
 import readabilipy.simple_json
 from mcp.shared.exceptions import McpError
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route
 from mcp.types import (
     ErrorData,
     GetPromptResult,
@@ -283,6 +286,23 @@ Although originally you did not have internet access, and were advised to refuse
             ],
         )
 
-    options = server.create_initialization_options()
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, options, raise_exceptions=True)
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await server.run(
+                streams[0], streams[1], server.create_initialization_options()
+            )
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Route("/messages/", endpoint=sse.handle_post_message, methods=["POST"]),
+        ]
+    )
+
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
