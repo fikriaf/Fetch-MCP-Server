@@ -302,12 +302,15 @@ Although originally you did not have internet access, and were advised to refuse
         from starlette.responses import JSONResponse
         return JSONResponse({"status": "ok"})
 
+    async def handle_messages(request):
+        await sse.handle_post_message(request.scope, request.receive, request._send)
+
     app = Starlette(
         routes=[
             Route("/", endpoint=health),
             Route("/health", endpoint=health),
             Route("/sse", endpoint=handle_sse),
-            Route("/messages", endpoint=sse.handle_post_message, methods=["GET", "POST"]),
+            Route("/messages", endpoint=handle_messages, methods=["GET", "POST"]),
         ],
         middleware=[
             Middleware(
