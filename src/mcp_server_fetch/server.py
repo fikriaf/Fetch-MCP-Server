@@ -9,6 +9,8 @@ from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
 from starlette.routing import Route
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from mcp.types import (
     ErrorData,
     GetPromptResult,
@@ -296,13 +298,28 @@ Although originally you did not have internet access, and were advised to refuse
                 streams[0], streams[1], server.create_initialization_options()
             )
 
+    async def health(request):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"status": "ok"})
+
     app = Starlette(
         routes=[
+            Route("/", endpoint=health),
+            Route("/health", endpoint=health),
             Route("/sse", endpoint=handle_sse),
             Route("/messages/", endpoint=sse.handle_post_message, methods=["POST"]),
+        ],
+        middleware=[
+            Middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
         ]
     )
 
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
+    print(f"Starting MCP Fetch Server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
