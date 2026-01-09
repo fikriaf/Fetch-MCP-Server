@@ -288,7 +288,7 @@ Although originally you did not have internet access, and were advised to refuse
             ],
         )
 
-    sse = SseServerTransport("/messages/")
+    sse = SseServerTransport("/messages")
 
     async def handle_sse(request):
         async with sse.connect_sse(
@@ -302,12 +302,25 @@ Although originally you did not have internet access, and were advised to refuse
         from starlette.responses import JSONResponse
         return JSONResponse({"status": "ok"})
 
+    async def handle_messages(request):
+        from starlette.responses import Response
+        if request.method == "OPTIONS":
+            return Response(
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                }
+            )
+        return await sse.handle_post_message(request)
+
     app = Starlette(
         routes=[
             Route("/", endpoint=health),
             Route("/health", endpoint=health),
             Route("/sse", endpoint=handle_sse),
-            Route("/messages/", endpoint=sse.handle_post_message, methods=["POST"]),
+            Route("/messages", endpoint=handle_messages, methods=["POST", "OPTIONS"]),
         ],
         middleware=[
             Middleware(
@@ -315,6 +328,7 @@ Although originally you did not have internet access, and were advised to refuse
                 allow_origins=["*"],
                 allow_methods=["*"],
                 allow_headers=["*"],
+                allow_credentials=True,
             )
         ]
     )
