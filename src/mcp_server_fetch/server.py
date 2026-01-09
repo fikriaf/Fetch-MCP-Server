@@ -118,9 +118,11 @@ async def fetch_url(
 ) -> Tuple[str, str]:
     """
     Fetch the URL and return the content in a form ready for the LLM, as well as a prefix string with status information.
+    First tries with httpx, falls back to Playwright for JS-heavy sites.
     """
     from httpx import AsyncClient, HTTPError
 
+    # First try with httpx (faster)
     async with AsyncClient(proxies=proxy_url) as client:
         try:
             response = await client.get(
@@ -129,15 +131,14 @@ async def fetch_url(
                 headers={"User-Agent": user_agent},
                 timeout=30,
             )
+            if response.status_code >= 400:
+                raise McpError(ErrorData(
+                    code=INTERNAL_ERROR,
+                    message=f"Failed to fetch {url} - status code {response.status_code}",
+                ))
+            page_raw = response.text
         except HTTPError as e:
             raise McpError(ErrorData(code=INTERNAL_ERROR, message=f"Failed to fetch {url}: {e!r}"))
-        if response.status_code >= 400:
-            raise McpError(ErrorData(
-                code=INTERNAL_ERROR,
-                message=f"Failed to fetch {url} - status code {response.status_code}",
-            ))
-
-        page_raw = response.text
 
     content_type = response.headers.get("content-type", "")
     is_page_html = (
@@ -145,12 +146,41 @@ async def fetch_url(
     )
 
     if is_page_html and not force_raw:
-        return extract_content_from_html(page_raw), ""
+        content = extract_content_from_html(page_raw)
+        # If content is too short, likely JS-rendered - try Playwright
+        if len(content.strip()) < 100:
+            try:
+                content = await fetch_with_playwright(url, user_agent)
+                if content:
+                    return content, ""
+            except Exception:
+                pass  # Fall back to original content
+        return content, ""
 
     return (
         page_raw,
         f"Content type {content_type} cannot be simplified to markdown, but here is the raw content:\n",
     )
+
+
+async def fetch_with_playwright(url: str, user_agent: str) -> str:
+    """Fetch URL using Playwright headless browser for JS-rendered content."""
+    from playwright.async_api import async_playwright
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=user_agent)
+        page = await context.new_page()
+        
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            # Wait a bit for dynamic content
+            await page.wait_for_timeout(2000)
+            content = await page.content()
+        finally:
+            await browser.close()
+    
+    return extract_content_from_html(content)
 
 
 class Fetch(BaseModel):
