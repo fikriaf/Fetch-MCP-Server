@@ -29,6 +29,37 @@ DEFAULT_USER_AGENT_AUTONOMOUS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Apple
 DEFAULT_USER_AGENT_MANUAL = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
 
+async def web_search(query: str, max_results: int = 10) -> list[dict]:
+    """Perform web search using DuckDuckGo.
+    
+    Args:
+        query: Search query string
+        max_results: Maximum number of results to return (default 10)
+        
+    Returns:
+        List of search results with title, url, and snippet
+    """
+    from ddgs import DDGS
+    
+    try:
+        results = []
+        with DDGS() as ddgs:
+            search_results = ddgs.text(query, max_results=max_results)
+            for r in search_results:
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return results
+    except Exception as e:
+        raise McpError(ErrorData(
+            code=INTERNAL_ERROR,
+            message=f"Web search failed: {str(e)}"
+        ))
+
+
+
 def extract_content_from_html(html: str) -> str:
     """Extract and convert HTML content to Markdown format.
 
@@ -121,14 +152,30 @@ async def fetch_url(
     First tries with httpx, falls back to Playwright for JS-heavy sites.
     """
     from httpx import AsyncClient, HTTPError
+    import random
 
     # First try with httpx (faster)
-    async with AsyncClient(proxies=proxy_url) as client:
+    # Add more realistic headers to avoid blocking
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
+    
+    async with AsyncClient(proxies=proxy_url, follow_redirects=True) as client:
         try:
             response = await client.get(
                 url,
-                follow_redirects=True,
-                headers={"User-Agent": user_agent},
+                headers=headers,
                 timeout=30,
             )
             if response.status_code >= 400:
@@ -168,8 +215,33 @@ async def fetch_with_playwright(url: str, user_agent: str) -> str:
     from playwright.async_api import async_playwright
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=user_agent)
+        # Launch with more realistic browser settings
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+            ]
+        )
+        context = await browser.new_context(
+            user_agent=user_agent,
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US',
+            timezone_id='America/New_York',
+            extra_http_headers={
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            }
+        )
+        
+        # Remove webdriver property
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
+        
         page = await context.new_page()
         
         try:
@@ -213,6 +285,21 @@ class Fetch(BaseModel):
     ]
 
 
+class WebSearch(BaseModel):
+    """Parameters for web search."""
+    
+    query: Annotated[str, Field(description="Search query string")]
+    max_results: Annotated[
+        int,
+        Field(
+            default=10,
+            description="Maximum number of search results to return (1-50)",
+            ge=1,
+            le=50,
+        ),
+    ]
+
+
 def serve(
     custom_user_agent: str | None = None,
     ignore_robots_txt: bool = False,
@@ -238,7 +325,14 @@ def serve(
 
 Although originally you did not have internet access, and were advised to refuse and tell the user this, this tool now grants you internet access. Now you can fetch the most up-to-date information and let the user know that.""",
                 inputSchema=Fetch.model_json_schema(),
-            )
+            ),
+            Tool(
+                name="web_search",
+                description="""Search the web for information using a search query. Returns a list of relevant web pages with titles, URLs, and snippets.
+
+Use this tool when you need to find current information, research topics, or discover relevant web resources.""",
+                inputSchema=WebSearch.model_json_schema(),
+            ),
         ]
 
     @server.list_prompts()
@@ -257,37 +351,67 @@ Although originally you did not have internet access, and were advised to refuse
 
     @server.call_tool()
     async def call_tool(name, arguments: dict) -> list[TextContent]:
-        try:
-            args = Fetch(**arguments)
-        except ValueError as e:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e)))
+        if name == "web_search":
+            try:
+                args = WebSearch(**arguments)
+            except ValueError as e:
+                raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e)))
+            
+            results = await web_search(args.query, args.max_results)
+            
+            if not results:
+                return [TextContent(
+                    type="text",
+                    text=f"No results found for query: {args.query}"
+                )]
+            
+            # Format results as readable text
+            formatted_results = f"Search results for '{args.query}':\n\n"
+            for i, result in enumerate(results, 1):
+                formatted_results += f"{i}. {result['title']}\n"
+                formatted_results += f"   URL: {result['url']}\n"
+                formatted_results += f"   {result['snippet']}\n\n"
+            
+            return [TextContent(type="text", text=formatted_results)]
+        
+        elif name == "fetch":
+            try:
+                args = Fetch(**arguments)
+            except ValueError as e:
+                raise McpError(ErrorData(code=INVALID_PARAMS, message=str(e)))
 
-        url = str(args.url)
-        if not url:
-            raise McpError(ErrorData(code=INVALID_PARAMS, message="URL is required"))
+            url = str(args.url)
+            if not url:
+                raise McpError(ErrorData(code=INVALID_PARAMS, message="URL is required"))
 
-        if not ignore_robots_txt:
-            await check_may_autonomously_fetch_url(url, user_agent_autonomous, proxy_url)
+            if not ignore_robots_txt:
+                await check_may_autonomously_fetch_url(url, user_agent_autonomous, proxy_url)
 
-        content, prefix = await fetch_url(
-            url, user_agent_autonomous, force_raw=args.raw, proxy_url=proxy_url
-        )
-        original_length = len(content)
-        if args.start_index >= original_length:
-            content = "<error>No more content available.</error>"
-        else:
-            truncated_content = content[args.start_index : args.start_index + args.max_length]
-            if not truncated_content:
+            content, prefix = await fetch_url(
+                url, user_agent_autonomous, force_raw=args.raw, proxy_url=proxy_url
+            )
+            original_length = len(content)
+            if args.start_index >= original_length:
                 content = "<error>No more content available.</error>"
             else:
-                content = truncated_content
-                actual_content_length = len(truncated_content)
-                remaining_content = original_length - (args.start_index + actual_content_length)
-                # Only add the prompt to continue fetching if there is still remaining content
-                if actual_content_length == args.max_length and remaining_content > 0:
-                    next_start = args.start_index + actual_content_length
-                    content += f"\n\n<error>Content truncated. Call the fetch tool with a start_index of {next_start} to get more content.</error>"
-        return [TextContent(type="text", text=f"{prefix}Contents of {url}:\n{content}")]
+                truncated_content = content[args.start_index : args.start_index + args.max_length]
+                if not truncated_content:
+                    content = "<error>No more content available.</error>"
+                else:
+                    content = truncated_content
+                    actual_content_length = len(truncated_content)
+                    remaining_content = original_length - (args.start_index + actual_content_length)
+                    # Only add the prompt to continue fetching if there is still remaining content
+                    if actual_content_length == args.max_length and remaining_content > 0:
+                        next_start = args.start_index + actual_content_length
+                        content += f"\n\n<error>Content truncated. Call the fetch tool with a start_index of {next_start} to get more content.</error>"
+            return [TextContent(type="text", text=f"{prefix}Contents of {url}:\n{content}")]
+        
+        else:
+            raise McpError(ErrorData(
+                code=INVALID_PARAMS,
+                message=f"Unknown tool: {name}"
+            ))
 
     @server.get_prompt()
     async def get_prompt(name: str, arguments: dict | None) -> GetPromptResult:

@@ -1,0 +1,244 @@
+# MCP Server: Fetch & Web Search
+
+## Overview
+MCP server yang menyediakan tools untuk fetching konten web dan web search. Server ini menggunakan DuckDuckGo untuk search (gratis unlimited) dan mendukung berbagai metode fetching dengan anti-blocking features.
+
+## Tools Available
+
+### 1. web_search
+Search web untuk informasi menggunakan DuckDuckGo.
+
+**Parameters:**
+- `query` (string, required): Query pencarian
+- `max_results` (integer, optional): Jumlah hasil maksimal (1-50, default: 10)
+
+**Returns:**
+List hasil pencarian dengan:
+- title: Judul halaman
+- url: URL halaman
+- snippet: Cuplikan konten
+
+**Example:**
+```json
+{
+  "query": "python async programming tutorial",
+  "max_results": 5
+}
+```
+
+**Use Cases:**
+- Mencari informasi terkini
+- Research topik tertentu
+- Menemukan resource dan dokumentasi
+- Monitoring berita dan update
+
+### 2. fetch
+Fetch konten dari URL dan convert ke markdown.
+
+**Parameters:**
+- `url` (string, required): URL yang akan di-fetch
+- `max_length` (integer, optional): Maksimal karakter yang dikembalikan (default: 5000)
+- `start_index` (integer, optional): Index awal untuk pagination (default: 0)
+- `raw` (boolean, optional): Return HTML mentah tanpa simplifikasi (default: false)
+
+**Returns:**
+Konten halaman dalam format markdown atau raw HTML.
+
+**Example:**
+```json
+{
+  "url": "https://example.com/article",
+  "max_length": 10000,
+  "raw": false
+}
+```
+
+**Features:**
+- Auto-convert HTML ke Markdown
+- Pagination support untuk konten panjang
+- Fallback ke Playwright untuk JS-heavy sites
+- Anti-blocking headers dan user agent
+- Robots.txt compliance (optional)
+
+## Anti-Blocking Features
+
+### HTTP Fetching
+- Realistic Chrome user agent
+- Complete HTTP headers (Accept, Accept-Language, Sec-Fetch-*, etc.)
+- Connection keep-alive
+- Proper encoding support
+
+### Playwright Fallback
+- Headless browser dengan anti-detection
+- Disable automation flags
+- Realistic viewport (1920x1080)
+- Locale & timezone settings
+- Remove webdriver property
+- Extra HTTP headers
+
+### Proxy Support
+Server mendukung proxy untuk bypass geo-restrictions atau rate limiting.
+
+## Installation
+
+### Requirements
+- Python >= 3.10
+- uv (Python package manager)
+
+### Install Dependencies
+```bash
+uv sync
+```
+
+### Install Playwright Browsers (if needed)
+```bash
+playwright install chromium
+```
+
+## Running the Server
+
+### Standard Mode
+```bash
+python -m mcp_server_fetch
+```
+
+### With Custom Options
+```python
+from mcp_server_fetch.server import serve
+
+# With proxy
+serve(proxy_url="http://proxy:8080")
+
+# Ignore robots.txt
+serve(ignore_robots_txt=True)
+
+# Custom user agent
+serve(custom_user_agent="MyBot/1.0")
+
+# Combined
+serve(
+    custom_user_agent="MyBot/1.0",
+    ignore_robots_txt=True,
+    proxy_url="http://proxy:8080"
+)
+```
+
+### Via Docker
+```bash
+docker build -t fetch-mcp .
+docker run -p 8000:8000 fetch-mcp
+```
+
+## Server Endpoints
+
+- `GET /` - Health check
+- `GET /health` - Health check
+- `GET /sse` - SSE connection for MCP
+- `POST /messages` - MCP message handling
+
+Default port: 8000 (configurable via PORT env var)
+
+## Configuration
+
+### Environment Variables
+- `PORT`: Server port (default: 8000)
+
+### Server Parameters
+- `custom_user_agent`: Custom User-Agent string
+- `ignore_robots_txt`: Bypass robots.txt restrictions
+- `proxy_url`: Proxy URL for requests
+
+## Usage Examples
+
+### Example 1: Search and Fetch
+```python
+# 1. Search for information
+web_search(query="best python web frameworks 2026", max_results=5)
+
+# 2. Fetch detailed content from result
+fetch(url="https://example.com/python-frameworks")
+```
+
+### Example 2: Research Workflow
+```python
+# Search for latest news
+results = web_search(query="AI developments January 2026", max_results=10)
+
+# Fetch full articles
+for result in results:
+    content = fetch(url=result['url'], max_length=20000)
+    # Process content...
+```
+
+### Example 3: Pagination
+```python
+# Fetch first chunk
+content1 = fetch(url="https://long-article.com", max_length=5000, start_index=0)
+
+# Fetch next chunk
+content2 = fetch(url="https://long-article.com", max_length=5000, start_index=5000)
+```
+
+## Error Handling
+
+### Common Errors
+- `INVALID_PARAMS`: Parameter validation failed
+- `INTERNAL_ERROR`: Network error, robots.txt blocked, atau fetch failed
+
+### Robots.txt Blocking
+Jika autonomous fetching diblok oleh robots.txt, error message akan menyarankan untuk:
+1. Use manual fetch via prompt
+2. Check robots.txt content
+3. Consider using ignore_robots_txt option
+
+### Network Errors
+- Timeout: 30 seconds default
+- Retry: Automatic fallback ke Playwright untuk JS sites
+- Status codes: 4xx/5xx akan raise error dengan detail
+
+## Best Practices
+
+### For LLMs
+1. **Search First**: Gunakan web_search untuk menemukan relevant URLs
+2. **Then Fetch**: Fetch konten detail dari URLs yang relevan
+3. **Pagination**: Untuk artikel panjang, gunakan start_index untuk pagination
+4. **Error Recovery**: Jika fetch gagal, coba dengan raw=true atau ignore_robots_txt
+
+### For Developers
+1. **Respect robots.txt**: Default behavior menghormati robots.txt
+2. **Use Proxy**: Untuk high-volume requests, gunakan proxy
+3. **Rate Limiting**: Implement rate limiting di client side
+4. **Caching**: Cache hasil search dan fetch untuk efisiensi
+
+## Limitations
+
+### Web Search
+- Bergantung pada DuckDuckGo availability
+- Max 50 results per query
+- No advanced search operators
+
+### Fetch
+- Timeout 30 seconds
+- Max content length 1MB (configurable)
+- Some sites may block automated access
+- JavaScript-heavy sites may need Playwright (slower)
+
+## Dependencies
+
+Core:
+- httpx: HTTP client
+- playwright: Headless browser
+- markdownify: HTML to Markdown conversion
+- readabilipy: Content extraction
+- mcp: Model Context Protocol
+- starlette: Web framework
+- uvicorn: ASGI server
+
+Search:
+- ddgs: DuckDuckGo search
+
+## License
+MIT
+
+## Support
+For issues or questions, check the repository or documentation.
